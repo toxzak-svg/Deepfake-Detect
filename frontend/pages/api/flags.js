@@ -7,7 +7,7 @@ export default async function handler(req, res) {
   try {
     const backendRes = await fetch("http://localhost:8000/detect", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.BACKEND_API_KEY || "demo-key" },
       body: JSON.stringify({ url, source: "nextjs" }),
     });
 

@@ -4,7 +4,7 @@ export default async function handler(req, res) {
     const body = await req.json();
     const backendRes = await fetch("http://localhost:8000/label", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-api-key": process.env.BACKEND_API_KEY || "demo-key" },
       body: JSON.stringify(body),
     });
     const data = await backendRes.json();

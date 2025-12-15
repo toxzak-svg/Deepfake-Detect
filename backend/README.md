@@ -18,6 +18,23 @@ Replace the stub with a real ingestion and inference pipeline as you progress.
 Model demo
 ----------
 
+
+Authentication & Rate Limiting
+------------------------------
+
+This prototype enforces a simple API key check on the `/detect` and `/label` endpoints. Keys are read from the `DEEPFAKE_API_KEYS` environment variable (comma-separated). If not set, a default `demo-key` is accepted.
+
+Example (Linux/macOS):
+
+```bash
+export DEEPFAKE_API_KEYS=demo-key,my-production-key
+export DEEPFAKE_RATE_LIMIT_PER_MIN=120
+uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Requests must include header `x-api-key: <key>`. The backend enforces a fixed-window rate limit per key based on `DEEPFAKE_RATE_LIMIT_PER_MIN`.
+
+This is a prototype-only approach — for production use a persistent rate limiter (Redis), robust auth (JWT/OAuth2), and proper key management.
 To enable the baseline model demo (frame-level inference) install the ML requirements:
 
 ```bash

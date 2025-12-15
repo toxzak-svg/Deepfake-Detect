@@ -14,6 +14,11 @@ import numpy as np
 import cv2
 import csv
 from pathlib import Path
+import asyncio
+import tempfile
+import subprocess
+import glob
+import os
 
 
 app = FastAPI(title="Deepfake-Detect Backend")
@@ -85,6 +90,40 @@ async def detect(req: DetectRequest):
                     flags.append("model_suspect_frame")
         except Exception as e:
             # non-fatal: return heuristic result and note the error
+            return {"score": score, "flags": flags, "details": {"source": req.source, "error": str(e)}}
+
+    # If URL looks like a video (YouTube) try to download and extract frames
+    if any(x in url_lower for x in ("youtube.com", "youtu.be")) or ".mp4" in url_lower:
+        try:
+            async def run_extract_and_score(url: str) -> float | None:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    out_dir = Path(tmpdir) / "frames"
+                    cmd = [sys.executable, str(ROOT / "scripts" / "extract_frames.py"), url, str(out_dir), "4"]
+
+                    def run_cmd():
+                        subprocess.check_call(cmd)
+
+                    await asyncio.to_thread(run_cmd)
+
+                    frames = []
+                    for p in sorted(out_dir.glob("*.jpg")):
+                        im = cv2.imread(str(p))
+                        if im is None:
+                            continue
+                        im = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+                        frames.append(im)
+                    if not frames:
+                        return None
+                    probs = detector.predict_frames(frames)
+                    return float(np.mean(probs))
+
+            vid_score = await run_extract_and_score(req.url)
+            if vid_score is not None:
+                score = max(score, vid_score * 0.95)
+                if vid_score > 0.6:
+                    flags.append("model_suspect_video_frames")
+        except Exception as e:
+            # non-fatal; return heuristic result with error
             return {"score": score, "flags": flags, "details": {"source": req.source, "error": str(e)}}
 
     return {"score": score, "flags": flags, "details": {"source": req.source}}

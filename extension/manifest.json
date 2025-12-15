@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Deepfake Detect Extension",
+  "version": "0.1.0",
+  "description": "Quick demo extension that checks pages for possible deepfake giveaway scams.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Deepfake Detect"
+  }
+}

@@ -1,0 +1,6 @@
+torch>=2.1
+torchaudio
+transformers
+opencv-python
+numpy
+scikit-learn

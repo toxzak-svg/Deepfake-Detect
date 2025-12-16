@@ -81,7 +81,7 @@ output [
     filename.write_text(cfg.strip() + "\n")
 
 
-def prepare_model_repo(model_name: str, output_dir: Path, save_torch: bool, save_onnx: bool, device: torch.device):
+def prepare_model_repo(model_name: str, output_dir: Path, save_torch: bool, save_onnx_flag: bool, device: torch.device):
     output_dir.mkdir(parents=True, exist_ok=True)
     if save_torch:
         repo = output_dir / model_name
@@ -93,7 +93,7 @@ def prepare_model_repo(model_name: str, output_dir: Path, save_torch: bool, save
         save_torchscript(model, pt_path, device)
         make_triton_config(model_name, "pytorch_libtorch", repo / "config.pbtxt")
 
-    if save_onnx:
+    if save_onnx_flag:
         repo = output_dir / (model_name + "_onnx")
         model_version_dir = repo / "1"
         model_version_dir.mkdir(parents=True, exist_ok=True)
@@ -141,8 +141,8 @@ def main():
         download_url(args.weights_url, tmpf)
         tmp_ckpt = tmpf
 
-    save_torch = args.format in ("torchscript", "both")
-    save_onnx = args.format in ("onnx", "both")
+    save_torch_flag = args.format in ("torchscript", "both")
+    save_onnx_flag = args.format in ("onnx", "both")
 
     # If a specific weights file was downloaded, pass to loader function
     # Our simple builder uses torchvision resnet; to apply checkpoint, we build model and then try load weights
@@ -157,7 +157,7 @@ def main():
 
         build_resnet_detector = _loaded_builder
 
-    prepare_model_repo(args.model_name, args.output_dir, save_torch, save_onnx, device)
+    prepare_model_repo(args.model_name, args.output_dir, save_torch_flag, save_onnx_flag, device)
 
 
 if __name__ == "__main__":

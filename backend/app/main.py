@@ -10,6 +10,8 @@ sys.path.append(str(ROOT))
 
 from models.baseline import BaselineDetector
 from config import ALLOWED_API_KEYS, RATE_LIMIT_PER_MIN
+from config import PERPLEXITY_API_KEY, PERPLEXITY_BASE_URL, PERPLEXITY_MODEL, PERPLEXITY_TIMEOUT
+from app.services.perplexity import create_perplexity_service
 import httpx
 import numpy as np
 import cv2
@@ -45,6 +47,19 @@ class DetectResponse(BaseModel):
 
 
 detector = BaselineDetector()
+
+# Initialize Perplexity service if API key is available
+perplexity_service = None
+if PERPLEXITY_API_KEY:
+    try:
+        perplexity_service = create_perplexity_service(
+            api_key=PERPLEXITY_API_KEY,
+            base_url=PERPLEXITY_BASE_URL,
+            model=PERPLEXITY_MODEL,
+            timeout=PERPLEXITY_TIMEOUT
+        )
+    except Exception as e:
+        print(f"Warning: Could not initialize Perplexity service: {e}")
 
 # Simple in-memory rate limiter: fixed window per API key
 _rate_windows: dict[str, dict] = {}
@@ -230,3 +245,119 @@ async def label(req: LabelRequest):
             writer.writerow(["url", "label", "reporter"])
         writer.writerow([req.url, req.label, req.reporter or "anonymous"])
     return {"ok": True}
+
+
+# ========== Perplexity AI Endpoints ==========
+
+
+class PerplexityAnalysisRequest(BaseModel):
+    url: str
+    description: str | None = None
+    additional_context: str | None = None
+
+
+class PerplexityWalletRequest(BaseModel):
+    address: str
+
+
+class PerplexityEndorsementRequest(BaseModel):
+    celebrity_name: str
+    crypto_project: str
+    claim: str | None = None
+
+
+class PerplexityTextRequest(BaseModel):
+    text: str
+
+
+@app.post("/perplexity/analyze-scam")
+async def analyze_scam_with_perplexity(req: PerplexityAnalysisRequest):
+    """Analyze a URL for scam indicators using Perplexity AI's real-time web search.
+
+    This endpoint provides enhanced threat intelligence by searching the web
+    for known scam reports, domain history, and similar fraud patterns.
+    """
+    if not perplexity_service:
+        raise HTTPException(
+            status_code=503,
+            detail="Perplexity service not configured. Set PERPLEXITY_API_KEY environment variable."
+        )
+
+    result = await perplexity_service.analyze_scam_indicators(
+        url=req.url,
+        description=req.description,
+        additional_context=req.additional_context
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Analysis failed"))
+
+    return result
+
+
+@app.post("/perplexity/research-wallet")
+async def research_wallet_with_perplexity(req: PerplexityWalletRequest):
+    """Research a cryptocurrency wallet address for scam history using Perplexity AI.
+
+    This endpoint searches for known scam reports, transaction patterns,
+    and reputation information about a wallet address.
+    """
+    if not perplexity_service:
+        raise HTTPException(
+            status_code=503,
+            detail="Perplexity service not configured. Set PERPLEXITY_API_KEY environment variable."
+        )
+
+    result = await perplexity_service.research_wallet_address(address=req.address)
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Research failed"))
+
+    return result
+
+
+@app.post("/perplexity/verify-endorsement")
+async def verify_endorsement_with_perplexity(req: PerplexityEndorsementRequest):
+    """Verify celebrity endorsement claims using Perplexity AI.
+
+    This endpoint fact-checks claims about celebrity crypto endorsements
+    by searching for official statements and news from reputable sources.
+    """
+    if not perplexity_service:
+        raise HTTPException(
+            status_code=503,
+            detail="Perplexity service not configured. Set PERPLEXITY_API_KEY environment variable."
+        )
+
+    result = await perplexity_service.verify_celebrity_endorsement(
+        celebrity_name=req.celebrity_name,
+        crypto_project=req.crypto_project,
+        claim=req.claim
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Verification failed"))
+
+    return result
+
+
+@app.post("/perplexity/analyze-text")
+async def analyze_text_with_perplexity(req: PerplexityTextRequest):
+    """Analyze text content for scam patterns using Perplexity AI.
+
+    This endpoint identifies urgency tactics, promises of guaranteed returns,
+    impersonation language, and other common scam indicators in text.
+    """
+    if not perplexity_service:
+        raise HTTPException(
+            status_code=503,
+            detail="Perplexity service not configured. Set PERPLEXITY_API_KEY environment variable."
+        )
+
+    result = await perplexity_service.analyze_text_for_scam_patterns(text=req.text)
+
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Analysis failed"))
+
+    return result
+

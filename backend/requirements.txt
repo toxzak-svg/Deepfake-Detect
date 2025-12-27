@@ -5,3 +5,5 @@ numpy
 opencv-python
 yt-dlp
 pytest
+pytest-asyncio
+openai>=1.0.0

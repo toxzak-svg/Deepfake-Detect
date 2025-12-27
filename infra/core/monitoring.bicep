@@ -37,8 +37,8 @@ resource logAnalyticsWorkspace 'Microsoft.OperationalInsights/workspaces@2022-10
 resource applicationInsights 'Microsoft.Insights/components@2020-02-02' = {
   name: 'appi${resourceToken}'
   location: location
-  tags: tags
   kind: 'web'
+  tags: tags
   properties: {
     Application_Type: 'web'
     WorkspaceResourceId: logAnalyticsWorkspace.id
@@ -57,4 +57,5 @@ output applicationInsightsName string = applicationInsights.name
 output applicationInsightsId string = applicationInsights.id
 output logAnalyticsWorkspaceId string = logAnalyticsWorkspace.properties.customerId
 output logAnalyticsWorkspaceName string = logAnalyticsWorkspace.name
+@secure()
 output logAnalyticsWorkspacePrimarySharedKey string = logAnalyticsWorkspace.listKeys().primarySharedKey

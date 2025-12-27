@@ -63,7 +63,7 @@ module containerRegistry './core/registry.bicep' = {
 // This must be defined BEFORE any container apps
 resource acrPullRoleAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: resourceGroup()
-  name: guid(resourceGroup().id, containerRegistry.outputs.registryId, userAssignedIdentity.id, 'AcrPull')
+  name: guid(resourceGroup().id, userAssignedIdentity.id, 'AcrPull')
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d') // AcrPull role
     principalId: userAssignedIdentity.properties.principalId

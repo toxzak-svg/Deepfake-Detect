@@ -180,6 +180,34 @@ curl -X POST "http://localhost:8000/perplexity/research-wallet" \
 
 See the design document for development roadmap and guidelines.
 
+## Azure Deployment
+
+This application is ready to deploy to Azure using Azure Developer CLI (azd).
+
+### Quick Deploy
+
+```bash
+# Install prerequisites: Azure CLI, azd, Docker
+# Login to Azure
+azd auth login
+
+# Deploy everything
+azd up
+```
+
+For complete deployment instructions, see [AZURE_DEPLOYMENT.md](AZURE_DEPLOYMENT.md).
+
+### What Gets Deployed
+
+- **Backend**: FastAPI Container App with ML models
+- **Frontend**: Next.js Container App
+- **Container Registry**: For Docker images
+- **Key Vault**: Secure secrets storage
+- **Application Insights**: Monitoring and telemetry
+- **Managed Identity**: Secure resource access
+
+Estimated cost: ~$50-100/month for development
+
 ## License
 
 See LICENSE file for details.

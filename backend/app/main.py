@@ -1,8 +1,9 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Request
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 import sys
+import uuid
 
 # Add backend root to path so we can import models from backend/models
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +13,8 @@ from models.baseline import BaselineDetector
 from config import ALLOWED_API_KEYS, RATE_LIMIT_PER_MIN
 from config import PERPLEXITY_API_KEY, PERPLEXITY_BASE_URL, PERPLEXITY_MODEL, PERPLEXITY_TIMEOUT
 from app.services.perplexity import create_perplexity_service
+from app.services.api_key_manager import APIKeyManager
+from app.services.webhook_service import WebhookService
 import httpx
 import numpy as np
 import cv2
@@ -22,9 +25,10 @@ import tempfile
 import subprocess
 import glob
 import os
+from typing import Optional
 
 
-app = FastAPI(title="Deepfake-Detect Backend")
+app = FastAPI(title="DeepfakeGuard API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,56 +98,32 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/detect", response_model=DetectResponse)
-async def detect(req: DetectRequest):
-    """Detection endpoint — lightweight demo pipeline.
-
-    - If `url` looks like an image, fetch and run the baseline frame detector.
-    - Otherwise apply fast heuristics on the URL text.
+@app.post("/v1/scan", response_model=DetectResponse)
+async def scan_media(
+    req: DetectRequest,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    """
+    Scan media for deepfake detection.
+    
+    This is the primary API endpoint for customers. Requires API key authentication.
+    Supports images and videos via URL.
+    
+    **Authentication**: Include your API key in the `X-API-Key` header.
+    
+    **Free tier**: 10 scans/month
+    **Pro tier**: 500 scans/month with manual review
+    **Enterprise tier**: Unlimited scans with dedicated review team
     """
     if not req.url:
-        raise HTTPException(status_code=400, detail="url required")
-
-    # Auth: require API key for detection endpoints
-    from fastapi import Request
-    # extract headers via request state if available (FastAPI passes header via dependency normally)
-    # In this handler we can access the current request using inspect of context; simpler: use Starlette's request in app state
-    # But the Next.js proxy will include the header; FastAPI exposes headers via `Request` dependency if needed.
-    # We'll check environ variable fallback for internal calls if header missing.
-    try:
-        from fastapi import Request
-        # if running in ASGI context, get header from Request via dependency injection is better
-    except Exception:
-        pass
-
-    # Check header in ASGI scope
-    try:
-        # Retrieve header from FastAPI's request via starlette 'request' in scope
-        import inspect
-        frame = inspect.currentframe()
-        # walk back to find 'request' in locals (best-effort)
-        req_obj = None
-        f = frame
-        while f:
-            if 'request' in f.f_locals:
-                req_obj = f.f_locals['request']
-                break
-            f = f.f_back
-        header_key = None
-        if req_obj is not None:
-            header_key = _get_key_from_header(req_obj.headers)
-    except Exception:
-        header_key = None
-
-    if not header_key:
-        # fallback to environment or default demo key
-        header_key = None
-    if header_key not in ALLOWED_API_KEYS:
-        raise HTTPException(status_code=401, detail="invalid or missing API key")
-
-    allowed, remaining = _check_rate_limit(header_key)
-    if not allowed:
-        raise HTTPException(status_code=429, detail="rate limit exceeded")
+        raise HTTPException(status_code=400, detail="url is required")
+    
+    # Validate API key and check usage limits
+    is_valid, user_data, error_msg = APIKeyManager.validate_api_key(x_api_key)
+    if not is_valid:
+        raise HTTPException(status_code=401, detail=error_msg or "Invalid API key")
+    
+    scan_id = str(uuid.uuid4())
 
     url_lower = req.url.lower()
     score = 0.05
@@ -234,18 +214,169 @@ class LabelRequest(BaseModel):
     reporter: str | None = None
 
 
-@app.post("/label")
-async def label(req: LabelRequest):
-    """Append a label to the labels CSV file."""
-    LABELS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    created = not LABELS_FILE.exists()
-    with LABELS_FILE.open("a", newline="", encoding="utf-8") as csvfile:
-        writer = csv.writer(csvfile)
-        if created:
-            writer.writerow(["url", "label", "reporter"])
-        writer.writerow([req.url, req.label, req.reporter or "anonymous"])
-    return {"ok": True}
+@app# Record scan usage
+    scan_data = {
+        'url': req.url,
+        'score': score,
+        'flags': flags,
+        'scan_id': scan_id,
+    }
+    scan_record = APIKeyManager.increment_usage(x_api_key, scan_data)
+    
+    # Send webhooks if configured
+    webhook_url = user_data.get('webhook_url')
+    if webhook_url:
+        # Send scan completed webhook
+        asyncio.create_task(WebhookService.notify_scan_completed(
+            webhook_url=webhook_url,
+            scan_id=scan_id,
+            result=scan_data
+        ))
+        
+        # If flagged, send additional alert
+        if score > 0.6:
+            asyncio.create_task(WebhookService.notify_scan_flagged(
+                webhook_url=webhook_url,
+                scan_id=scan_id,
+                result=scan_data
+            ))
+    
+    # Get remaining scans
+    stats = APIKeyManager.get_user_stats(x_api_key)
+    
+    return {
+        "score": score,
+        "flags": flags,
+        "details": {
+            "source": req.source,
+            "scan_id": scan_id,
+            "manual_review_pending": scan_record.get('manual_review_pending', False),
+            "scans_remaining": stats.get('scans_remaining'),
+        }
+    }
 
+
+# ========== API Key & Account Management ==========
+
+
+class CreateAccountRequest(BaseModel):
+    email: str
+    tier: str = 'free'
+    webhook_url: Optional[str] = None
+
+
+class UpdateWebhookRequest(BaseModel):
+    webhook_url: str
+
+
+@app.post("/v1/account/create")
+async def create_account(req: CreateAccountRequest):
+    """Create a new API account. Used by the signup flow."""
+    try:
+        user_data = APIKeyManager.create_user(
+            email=req.email,
+            tier=req.tier,
+            webhook_url=req.webhook_url
+        )
+        return {
+            "success": True,
+            "api_key": user_data['api_key'],
+            "email": user_data['email'],
+            "tier": user_data['tier'],
+            "scans_limit": APIKeyManager.TIERS[user_data['tier']]['scans_per_month'],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/v1/account/stats")
+async def get_account_stats(x_api_key: Optional[str] = Header(None, alias="X-API-Key")):
+    """Get usage statistics for your account."""
+    is_valid, user_data, error_msg = APIKeyManager.validate_api_key(x_api_key)
+    if not is_valid:
+        raise HTTPException(status_code=401, detail=error_msg or "Invalid API key")
+    
+    stats = APIKeyManager.get_user_stats(x_api_key)
+    return stats
+
+
+@app.post("/v1/account/webhook")
+async def update_webhook(
+    req: UpdateWebhookRequest,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key")
+):
+    """Update webhook URL for scan notifications."""
+    is_valid, user_data, error_msg = APIKeyManager.validate_api_key(x_api_key)
+    if not is_valid:
+        raise HTTPException(status_code=401, detail=error_msg or "Invalid API key")
+    
+    success = APIKeyManager.update_webhook_url(x_api_key, req.webhook_url)
+    if success:
+        return {"success": True, "webhook_url": req.webhook_url}
+    else:
+        raise HTTPException(status_code=500, detail="Failed to update webhook")
+
+
+# ========== Admin Endpoints (Manual Review) ==========
+
+
+class ReviewDecisionRequest(BaseModel):
+    scan_id: str
+    verdict: str  # 'confirmed', 'false_positive', 'uncertain'
+    notes: Optional[str] = None
+
+
+@app.get("/admin/pending-reviews")
+async def get_pending_reviews(admin_key: Optional[str] = Header(None, alias="X-Admin-Key")):
+    """Get all scans pending manual review (admin only)."""
+    # Simple admin auth - in production use proper auth
+    if admin_key != "admin_secret_key_change_me":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    pending = APIKeyManager.get_pending_reviews()
+    return {"pending_reviews": pending, "count": len(pending)}
+
+
+@app.post("/admin/review-decision")
+async def submit_review_decision(
+    req: ReviewDecisionRequest,
+    admin_key: Optional[str] = Header(None, alias="X-Admin-Key")
+):
+    """Submit manual review decision (admin only)."""
+    if admin_key != "admin_secret_key_change_me":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # TODO: Update scan record with review decision
+    # TODO: Send webhook notification to customer
+    
+    return {
+        "success": True,
+        "scan_id": req.scan_id,
+        "verdict": req.verdict,
+    }
+
+
+LABELS_FILE = ROOT / "data" / "labels.csv"
+SEED_FILE = ROOT / "data" / "seed_urls.txt"
+LABELS_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/seed")
+async def seed_urls():
+    """Return seed URLs for labeling (reads backend/data/seed_urls.txt)."""
+    if not SEED_FILE.exists():
+        return {"urls": []}
+    with SEED_FILE.open("r", encoding="utf-8") as f:
+        urls = [l.strip() for l in f.readlines() if l.strip()]
+    return {"urls": urls}
+
+
+class LabelRequest(BaseModel):
+    url: str
+    label: str
+    reporter: str | None = None
+
+    
 
 # ========== Perplexity AI Endpoints ==========
 
